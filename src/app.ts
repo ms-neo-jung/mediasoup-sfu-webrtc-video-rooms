@@ -8,14 +8,20 @@ const config = require("./config");
 const path = require("path");
 const Room = require("./Room");
 const Peer = require("./Peer");
+import { Server, Socket } from "socket.io";
+import { Worker } from "mediasoup/lib/types";
 
 const options = {
   key: fs.readFileSync(path.join(__dirname, config.sslKey), "utf-8"),
   cert: fs.readFileSync(path.join(__dirname, config.sslCrt), "utf-8"),
 };
 
+interface MSSocket extends Socket {
+  room_id?: string;
+}
+
 const httpsServer = https.createServer(options, app);
-const io = require("socket.io")(httpsServer);
+const io = new Server(httpsServer);
 
 app.use(express.static(path.join(__dirname, "..", "public")));
 
@@ -80,15 +86,22 @@ async function createWorkers() {
   }
 }
 
-io.on("connection", (socket) => {
+io.on("connection", (socket: MSSocket) => {
   socket.on("createRoom", async ({ room_id }, callback) => {
     if (roomList.has(room_id)) {
       callback("already exists");
     } else {
       console.log("---created room--- ", room_id);
-      let worker = await getMediasoupWorker();
-      roomList.set(room_id, new Room(room_id, worker, io));
-      callback(room_id);
+      let worker = getMediasoupWorker();
+      const room = new Room(room_id, worker, io);
+      try {
+        await room.init();
+        roomList.set(room_id, room);
+      } catch (error) {
+        console.error("app: createRoom error", error);
+        callback(room_id, error);
+      }
+      callback(room_id, null);
     }
   });
 
@@ -266,24 +279,24 @@ io.on("connection", (socket) => {
   });
 });
 
-function room() {
-  return Object.values(roomList).map((r) => {
-    return {
-      router: r.router.id,
-      peers: Object.values(r.peers).map((p) => {
-        return {
-          name: p.name,
-        };
-      }),
-      id: r.id,
-    };
-  });
-}
+// function room() {
+//   return Object.values(roomList).map((r) => {
+//     return {
+//       router: r.router.id,
+//       peers: Object.values(r.peers).map((p) => {
+//         return {
+//           name: p.name,
+//         };
+//       }),
+//       id: r.id,
+//     };
+//   });
+// }
 
 /**
  * Get next mediasoup Worker.
  */
-function getMediasoupWorker() {
+function getMediasoupWorker(): Worker {
   const worker = workers[nextMediasoupWorkerIdx];
 
   if (++nextMediasoupWorkerIdx === workers.length) nextMediasoupWorkerIdx = 0;
